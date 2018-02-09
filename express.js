@@ -1,6 +1,7 @@
 'use strict';
 
 
+const { nodeInterface, nodeField } = require('./data/node');
 const { graphql, buildSchema } = require('graphql');
 
 const {
@@ -11,31 +12,23 @@ const {
   GraphQLBoolean,
   GraphQLID,
   GraphQLNonNull,
-  GraphQLList
+  GraphQLList,
+  GraphQLInputObjectType
 } = require('graphql');
 
 const express = require('express');
-
+const { videoResource } = require('./data/node');
 const PORT = process.env.PORT || 3000;
 const server = express();
 const graphqlHTTP = require('express-graphql');
+const { globalIdField, connectionDefinitions, connectionFromPromisedArray, connectionArgs, mutationWithClientMutationId } = require('graphql-relay');
 
-const v = {
-  id: () => 'uiid1',
-  title: () => 'GetStarted',
-  duration: () => 200,
-  watched: () => true
-};
-
-const vs = [{ ...v, id: 'uuid1' }, { ...v, id: 'uuid2' }, { ...v, id: 'uuid3' }];
 
 const videoType = new GraphQLObjectType({
   name: 'VideoType',
   description: 'v type',
   fields: {
-    id: {
-      type: GraphQLID
-    },
+    id: globalIdField(),
     title: {
       type: GraphQLString
     },
@@ -45,13 +38,25 @@ const videoType = new GraphQLObjectType({
     watched: {
       type: GraphQLBoolean
     }
-  }
+  },
+  interfaces: [nodeInterface]
+});
+
+const { connectionType: VideoConnection } = connectionDefinitions({
+  nodeType: videoType,
+  connectionFields: () => ({
+    totalCount: {
+      type: GraphQLInt,
+      resolve: conn => conn.edges.length
+    }
+  })
 });
 
 const queryType = new GraphQLObjectType({
   name: 'QueryType',
   description: 'Query type',
   fields: () => ({
+    node: nodeField,
     video: {
       type: videoType,
       args: {
@@ -61,24 +66,55 @@ const queryType = new GraphQLObjectType({
       },
       description: 'egghead video',
       resolve: (_, args) => {
-        console.log(args, 'a');
-        return new Promise(r => r(vs.find(v => v.id === args.id)));
+        return videoResource.getVideoById(args.id);
       }
     },
     videos: {
-      args: {
-        first: {
-          type: GraphQLInt
-        }
-      },
-      type: new GraphQLList(videoType),
-      resolve: (_, args) => (new Promise(r => r([v, v, v].slice(0, args.first))))
+      type: VideoConnection,
+      args: connectionArgs,
+      resolve: (_, args) => connectionFromPromisedArray(
+        videoResource.getVideos(),
+        args
+      )
     }
   })
 });
 
+const videoMutation = mutationWithClientMutationId({
+  name: 'AddVideo',
+  inputFields: {
+    title: {
+      type: new GraphQLNonNull(GraphQLString)
+    },
+    duration: {
+      type: new GraphQLNonNull(GraphQLInt)
+    },
+    watched: {
+      type: new GraphQLNonNull(GraphQLBoolean)
+    }
+  },
+  outputFields: {
+    video: {
+      type: videoType
+    }
+  },
+  mutateAndGetPayload: args => new Promise((rs, rj) => {
+    Promise.resolve(videoResource.createVideo(args))
+      .then(v => rs({ video: v }))
+      .catch(rj);
+  })
+});
+
+const mutationType = new GraphQLObjectType({
+  name: 'Mutation',
+  fields: {
+    createVideo: videoMutation
+  }
+});
+
 const schema = new GraphQLSchema({
-  query: queryType
+  query: queryType,
+  mutation: mutationType
 });
 
 const query = `
@@ -98,3 +134,5 @@ server.use('/graphql', graphqlHTTP({
 server.listen(PORT, () => {
   console.log('lister localhost:', PORT)
 });
+
+exports.videoType = videoType;
